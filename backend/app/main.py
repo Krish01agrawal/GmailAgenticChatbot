@@ -1,6 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from app.auth import verify_google_token, create_jwt_token, decode_jwt_token
+from app.oauth import generate_auth_url, exchange_code_for_tokens
 from app.db import users_collection, emails_collection
 from app.gmail import build_gmail_service, fetch_emails
 from app.mem0_agent import upload_emails_to_mem0, query_mem0
@@ -9,6 +11,7 @@ from app.websocket import router as websocket_router
 import logging
 from bson import ObjectId
 from pydantic import BaseModel
+import os
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +35,7 @@ app.include_router(websocket_router)
 class TestMem0QueryPayload(BaseModel):
     user_id: str
     query: str
+
 
 @app.post("/auth/google-login")
 async def google_login(payload: GoogleToken):
@@ -74,6 +78,15 @@ async def google_login(payload: GoogleToken):
         jwt_token = create_jwt_token(jwt_payload_data)
         logger.info("JWT token created successfully.")
         
+        {
+            "jwt_token": jwt_token,
+            "user": {
+                "email": serializable_user_info["email"],
+                "name": serializable_user_info["name"],
+                "picture": serializable_user_info["picture"],
+                "user_id": serializable_user_info["user_id"],
+            },
+        }
         return {"jwt_token": jwt_token, "user": serializable_user_info}
     except HTTPException as e:
         logger.error(f"HTTPException in google_login: {e.detail}", exc_info=True)
@@ -143,6 +156,213 @@ async def test_mem0_query_endpoint(payload: TestMem0QueryPayload):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
+        )
+
+# Add new OAuth routes after the existing CORS setup
+@app.get("/auth/login")
+async def login():
+    """Redirect user to Google OAuth consent screen."""
+    try:
+        auth_url, state = generate_auth_url()
+        logger.info(f"Redirecting user to Google OAuth with state: {state}")
+        return RedirectResponse(url=auth_url)
+    except Exception as e:
+        logger.error(f"Error in /auth/login: {e}")
+        raise HTTPException(status_code=500, detail=f"Authentication error: {e}")
+
+@app.get("/auth/callback")
+async def oauth_callback(code: str = None, state: str = None, error: str = None):
+    """Handle OAuth callback from Google."""
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:8000")
+    
+    if error:
+        logger.error(f"OAuth error: {error}")
+        return RedirectResponse(url=f"{frontend_url}?error={error}")
+    
+    if not code or not state:
+        logger.error("Missing code or state in OAuth callback")
+        return RedirectResponse(url=f"{frontend_url}?error=missing_parameters")
+    
+    try:
+        # Exchange code for tokens and user info
+        credentials, user_info = exchange_code_for_tokens(code, state)
+        logger.info(f"OAuth successful for user: {user_info['email']}")
+        
+        # Store or update user in database
+        user_id_from_google = user_info["user_id"]
+        user_in_db = await users_collection.find_one({"user_id": user_id_from_google})
+        
+        if not user_in_db:
+            logger.info("Creating new user from OAuth...")
+            # Store user info with OAuth tokens
+            user_data = user_info.copy()
+            user_data.update({
+                "access_token": credentials.token,
+                "refresh_token": credentials.refresh_token,
+                "token_expiry": credentials.expiry.isoformat() if credentials.expiry else None
+            })
+            insert_result = await users_collection.insert_one(user_data)
+            final_user_info = await users_collection.find_one({"_id": insert_result.inserted_id})
+        else:
+            logger.info("Updating existing user with new OAuth tokens...")
+            # Update existing user with new tokens
+            update_data = {
+                "access_token": credentials.token,
+                "refresh_token": credentials.refresh_token,
+                "token_expiry": credentials.expiry.isoformat() if credentials.expiry else None,
+                "name": user_info.get("name"),
+                "picture": user_info.get("picture")
+            }
+            await users_collection.update_one(
+                {"user_id": user_id_from_google},
+                {"$set": update_data}
+            )
+            final_user_info = await users_collection.find_one({"user_id": user_id_from_google})
+        
+        # Create JWT token
+        jwt_payload = {"user_id": user_info["user_id"], "email": user_info["email"]}
+        jwt_token = create_jwt_token(jwt_payload)
+        
+        logger.info(f"OAuth completed successfully for user: {user_info['email']}")
+        
+        # Redirect to frontend with JWT token (no auto-email fetching)
+        return RedirectResponse(url=f"{frontend_url}?token={jwt_token}&user={user_info['email']}")
+        
+    except Exception as e:
+        logger.error(f"Error in OAuth callback: {e}")
+        return RedirectResponse(url=f"{frontend_url}?error=auth_failed")
+
+@app.post("/emails/fetch")
+async def fetch_user_emails(authorization: str = Header(None)):
+    """
+    Fetch emails for authenticated user.
+    Expects Authorization header with Bearer token.
+    """
+    try:
+        # Validate authorization header
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+        
+        token = authorization.split(" ")[1]
+        user = decode_jwt_token(token)
+        user_id = user.get("user_id")
+        user_email = user.get("email")
+        
+        logger.info(f"Fetching emails for user: {user_email}")
+        
+        # Get user's stored access token from database
+        user_in_db = await users_collection.find_one({"user_id": user_id})
+        if not user_in_db or not user_in_db.get("access_token"):
+            raise HTTPException(status_code=400, detail="User not found or no access token available")
+        
+        access_token = user_in_db["access_token"]
+        
+        # Build Gmail service and fetch emails
+        logger.info("Building Gmail service...")
+        service = build_gmail_service(access_token)
+        
+        logger.info("Fetching emails from Gmail...")
+        emails = await fetch_emails(service, max_results=100)
+        logger.info(f"Fetched {len(emails)} emails from Gmail")
+        
+        if emails:
+            # Store emails in MongoDB
+            logger.info("Storing emails in MongoDB...")
+            for email_item in emails:
+                email_item['user_id'] = user_id
+            
+            # Remove existing emails for this user to avoid duplicates
+            await emails_collection.delete_many({"user_id": user_id})
+            await emails_collection.insert_many(emails)
+            logger.info("Emails stored in MongoDB")
+            
+            # Upload to Mem0
+            logger.info("Uploading emails to Mem0...")
+            await upload_emails_to_mem0(user_id, emails)
+            logger.info("Emails uploaded to Mem0")
+        
+        return {
+            "success": True,
+            "message": f"Successfully fetched and processed {len(emails)} emails",
+            "email_count": len(emails),
+            "user_email": user_email
+        }
+        
+    except HTTPException as e:
+        logger.error(f"HTTPException in fetch_user_emails: {e.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"Error in fetch_user_emails: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch emails: {str(e)}"
+        )
+
+# Alternative endpoint with JWT in body (easier for frontend)
+class EmailFetchRequest(BaseModel):
+    jwt_token: str
+    max_results: int = 100
+
+@app.post("/emails/fetch-with-token")
+async def fetch_user_emails_with_token(payload: EmailFetchRequest):
+    """
+    Fetch emails for authenticated user.
+    Expects JWT token in request body.
+    """
+    try:
+        # Decode JWT token
+        user = decode_jwt_token(payload.jwt_token)
+        user_id = user.get("user_id")
+        user_email = user.get("email")
+        
+        logger.info(f"Fetching emails for user: {user_email}")
+        
+        # Get user's stored access token from database
+        user_in_db = await users_collection.find_one({"user_id": user_id})
+        if not user_in_db or not user_in_db.get("access_token"):
+            raise HTTPException(status_code=400, detail="User not found or no access token available")
+        
+        access_token = user_in_db["access_token"]
+        
+        # Build Gmail service and fetch emails
+        logger.info("Building Gmail service...")
+        service = build_gmail_service(access_token)
+        
+        logger.info(f"Fetching emails from Gmail (max: {payload.max_results})...")
+        emails = await fetch_emails(service, max_results=payload.max_results)
+        logger.info(f"Fetched {len(emails)} emails from Gmail")
+        
+        if emails:
+            # Store emails in MongoDB
+            logger.info("Storing emails in MongoDB...")
+            for email_item in emails:
+                email_item['user_id'] = user_id
+            
+            # Remove existing emails for this user to avoid duplicates
+            await emails_collection.delete_many({"user_id": user_id})
+            await emails_collection.insert_many(emails)
+            logger.info("Emails stored in MongoDB")
+            
+            # Upload to Mem0
+            logger.info("Uploading emails to Mem0...")
+            await upload_emails_to_mem0(user_id, emails)
+            logger.info("Emails uploaded to Mem0")
+        
+        return {
+            "success": True,
+            "message": f"Successfully fetched and processed {len(emails)} emails",
+            "email_count": len(emails),
+            "user_email": user_email
+        }
+        
+    except HTTPException as e:
+        logger.error(f"HTTPException in fetch_user_emails_with_token: {e.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"Error in fetch_user_emails_with_token: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch emails: {str(e)}"
         )
 
 def convert_objectid_to_str(data):
