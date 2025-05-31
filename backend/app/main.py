@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from app.auth import verify_google_token, create_jwt_token, decode_jwt_token
 from app.oauth import generate_auth_url, exchange_code_for_tokens
-from app.db import users_collection, emails_collection
+from app.db import users_collection, emails_collection, chats_collection
 from app.gmail import build_gmail_service, fetch_emails
 from app.mem0_agent import upload_emails_to_mem0, query_mem0
 from app.models import GoogleToken, GmailFetchPayload
@@ -36,6 +36,9 @@ class TestMem0QueryPayload(BaseModel):
     user_id: str
     query: str
 
+class ChatHistoryRequest(BaseModel):
+    jwt_token: str
+    chat_id: str = None  # Optional, if not provided returns all chats for user
 
 @app.post("/auth/google-login")
 async def google_login(payload: GoogleToken):
@@ -374,3 +377,66 @@ def convert_objectid_to_str(data):
     elif isinstance(data, ObjectId):
         return str(data)
     return data
+
+@app.post("/chat/history")
+async def get_chat_history(payload: ChatHistoryRequest):
+    """
+    Get chat history for a user.
+    If chat_id is provided, returns messages for that specific chat.
+    Otherwise, returns all chats for the user.
+    """
+    try:
+        # Decode JWT token
+        user = decode_jwt_token(payload.jwt_token)
+        user_id = user.get("user_id")
+        user_email = user.get("email")
+        
+        logger.info(f"Fetching chat history for user: {user_email}, chat_id: {payload.chat_id}")
+        
+        # Build query filter
+        query_filter = {"user_id": user_id}
+        if payload.chat_id:
+            query_filter["chat_id"] = payload.chat_id
+        
+        # Fetch chat messages sorted by timestamp
+        chat_messages = await chats_collection.find(query_filter).sort("timestamp", 1).to_list(length=None)
+        
+        # Convert ObjectIds to strings
+        serialized_messages = convert_objectid_to_str(chat_messages)
+        
+        logger.info(f"Found {len(serialized_messages)} chat messages")
+        
+        if payload.chat_id:
+            # Return messages for specific chat
+            return {
+                "success": True,
+                "chat_id": payload.chat_id,
+                "messages": serialized_messages,
+                "message_count": len(serialized_messages)
+            }
+        else:
+            # Group messages by chat_id
+            chats_by_id = {}
+            for msg in serialized_messages:
+                chat_id = msg.get("chat_id")
+                if chat_id not in chats_by_id:
+                    chats_by_id[chat_id] = []
+                chats_by_id[chat_id].append(msg)
+            
+            return {
+                "success": True,
+                "user_id": user_id,
+                "chats": chats_by_id,
+                "total_chats": len(chats_by_id),
+                "total_messages": len(serialized_messages)
+            }
+        
+    except HTTPException as e:
+        logger.error(f"HTTPException in get_chat_history: {e.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_chat_history: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch chat history: {str(e)}"
+        )
