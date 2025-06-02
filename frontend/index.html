@@ -3,295 +3,455 @@
 <head>
   <meta charset="UTF-8" />
   <title>GenAI Gmail Chat</title>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: auto; }
-    #chat { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 10px; margin-top: 20px; }
-    p { margin: 5px 0; }
-    #msg { width: 80%; }
-    button { padding: 5px 10px; }
-    /* Add some margin to the GSI button container if needed */
-    #gsiButton { margin-top: 10px; margin-bottom: 10px; }
-
-    /* Style for bot messages to handle multi-line text */
-    .bot-message-style {
-      white-space: pre-wrap; /* Preserves newlines and spaces, wraps text */
-      word-wrap: break-word; /* Breaks long words if necessary */
-      background-color: #f1f1f1; /* Optional: different background for bot messages */
+    body { 
+      font-family: Arial, sans-serif; 
+      padding: 20px; 
+      max-width: 600px; 
+      margin: auto; 
+      background-color: #f5f5f5;
+    }
+    
+    .container {
+      background-color: white;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    
+    h1 {
+      color: #333;
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .auth-section {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .login-btn {
+      background-color: #4285f4;
+      color: white;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 5px;
+      font-size: 16px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+      transition: background-color 0.3s;
+    }
+    
+    .login-btn:hover {
+      background-color: #3367d6;
+    }
+    
+    .status {
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 5px;
+      text-align: center;
+    }
+    
+    .status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    
+    .status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    
+    .status.info {
+      background-color: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+    
+    .chat-section {
+      display: none;
+    }
+    
+    .chat-section.active {
+      display: block;
+    }
+    
+    #chat { 
+      border: 1px solid #ddd; 
+      height: 350px; 
+      overflow-y: auto; 
+      padding: 15px; 
+      margin: 20px 0;
+      background-color: #fafafa;
+      border-radius: 5px;
+    }
+    
+    .message {
+      margin: 10px 0;
       padding: 8px;
       border-radius: 5px;
-      margin-bottom: 5px; /* Consistent with general p styling if needed */
+    }
+    
+    .user-message {
+      background-color: #e3f2fd;
+      text-align: right;
+    }
+    
+    .bot-message {
+      background-color: #f1f1f1;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    
+    .system-message {
+      background-color: #fff3cd;
+      color: #856404;
+      text-align: center;
+      font-style: italic;
+    }
+    
+    .input-section {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+    }
+    
+    #msg { 
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 14px;
+    }
+    
+    .send-btn {
+      background-color: #28a745;
+      color: white;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    .send-btn:hover {
+      background-color: #218838;
+    }
+    
+    .send-btn:disabled {
+      background-color: #6c757d;
+      cursor: not-allowed;
+    }
+    
+    .user-info {
+      background-color: #e8f5e8;
+      padding: 10px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+      text-align: center;
     }
   </style>
 </head>
 <body>
 
-  <h1>GenAI Gmail Chat</h1>
+<div class="container">
+  <h1>🤖 GenAI Gmail Chat</h1>
 
-  <!-- Container for the Google Sign-In button -->
-  <div id="gsiButton"></div>
-  <p id="status">Please sign in with Google.</p>
-
-  <div style="margin-top:20px;">
-    <input id="msg" type="text" placeholder="Type message" />
-    <button onclick="sendMessage()">Send</button>
+  <!-- Authentication Section -->
+  <div id="authSection" class="auth-section">
+    <p>Connect your Gmail account to start chatting with your AI assistant about your emails.</p>
+    <a id="loginBtn" href="#" class="login-btn">🔐 Login with Google</a>
   </div>
 
-  <div id="chat"></div>
+  <!-- Status Messages -->
+  <div id="status"></div>
+
+  <!-- User Info (shown after login) -->
+  <div id="userInfo" class="user-info" style="display: none;">
+    <strong>Welcome!</strong> <span id="userEmail"></span>
+    <button onclick="logout()" style="margin-left: 15px; background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">Logout</button>
+  </div>
+
+  <!-- Chat Section -->
+  <div id="chatSection" class="chat-section">
+    <div id="chat"></div>
+    
+    <div class="input-section">
+      <input id="msg" type="text" placeholder="Ask me about your emails..." />
+      <button id="sendBtn" class="send-btn" onclick="sendMessage()" disabled>Send</button>
+    </div>
+  </div>
+</div>
 
 <script>
   // ========== Configuration ==========
-  const GOOGLE_CLIENT_ID = '1044620755407-6uoea682lqab82k4odt0a337m6rv55lg.apps.googleusercontent.com';
-  const BACKEND_URL = 'http://localhost:8001'; // Ensure this matches your backend port
-
+  const BACKEND_URL = 'http://localhost:8001';
+  
   let jwtToken = null;
-  let googleAccessToken = null;
   let ws = null;
+  let currentUser = null;
+  let currentChatId = null;  // Track current chat ID
 
-  // ========== Google Sign-In Setup ==========
+  // ========== Initialization ==========
   window.onload = function () {
-    try {
-      google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: handleCredentialResponse,
-        error_callback: (error) => {
-            console.error("GSI Initialization Error in index.html:", error);
-            setStatus("GSI Initialization Error. Check console.");
-            alert("GSI Initialization Error. Check console.");
-        }
-      });
-
-      google.accounts.id.renderButton(
-        document.getElementById("gsiButton"),
-        { theme: "outline", size: "large" } // Customize button as needed
-      );
-      setStatus("Waiting for Google sign-in via button...");
-      console.log("Google sign-in initialized in index.html, button rendered.");
-
-      // Add event listener for Enter key on message input
-      const msgInput = document.getElementById("msg");
-      if (msgInput) {
-        msgInput.addEventListener("keydown", function(event) {
-          if (event.key === "Enter") {
-            event.preventDefault(); // Prevent default Enter behavior (e.g., newline in some inputs or form submission)
-            sendMessage();
-          }
-        });
-      }
-
-    } catch (error) {
-      console.error("Error during GSI setup in index.html:", error);
-      setStatus("Failed to initialize Google sign-in. Please try again.");
-      alert("Error initializing Google sign-in. Please refresh the page and try again.");
-    }
+    // Set the login URL dynamically
+    document.getElementById('loginBtn').href = `${BACKEND_URL}/auth/login`;
+    
+    checkAuthStatus();
+    setupEventListeners();
   };
 
-  async function handleCredentialResponse(response) {
-    setStatus("Google sign-in credential received. Verifying...");
-    console.log("Google sign-in verified. Raw response:", response);
-    const googleIdToken = response.credential;
+  function setupEventListeners() {
+    // Enter key sends message
+    const msgInput = document.getElementById("msg");
+    if (msgInput) {
+      msgInput.addEventListener("keydown", function(event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          sendMessage();
+        }
+      });
+    }
+  }
 
-    if (!googleIdToken) {
-        setStatus("Failed to get Google ID Token.");
-        alert("Failed to get Google ID Token from response. Check console.");
-        return;
+  function checkAuthStatus() {
+    // Check URL parameters for auth results
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    const user = urlParams.get('user');
+    const error = urlParams.get('error');
+
+    if (error) {
+      showStatus(`Authentication failed: ${error}`, 'error');
+      return;
+    }
+
+    if (token && user) {
+      // Successful authentication
+      jwtToken = token;
+      currentUser = user;
+      
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+      
+      // Update UI
+      showAuthenticatedState();
+      showStatus('Successfully authenticated! Emails have been processed.', 'success');
+      
+      // Connect to chat
+      setTimeout(connectWebSocket, 1000);
+      return;
+    }
+
+    // Check if user was previously authenticated (localStorage)
+    const savedToken = localStorage.getItem('jwtToken');
+    const savedUser = localStorage.getItem('currentUser');
+    
+    if (savedToken && savedUser) {
+      jwtToken = savedToken;
+      currentUser = savedUser;
+      showAuthenticatedState();
+      connectWebSocket();
+    }
+  }
+
+  function showAuthenticatedState() {
+    // Hide auth section
+    document.getElementById('authSection').style.display = 'none';
+    
+    // Show user info
+    const userInfo = document.getElementById('userInfo');
+    const userEmail = document.getElementById('userEmail');
+    userEmail.textContent = currentUser;
+    userInfo.style.display = 'block';
+    
+    // Show chat section
+    document.getElementById('chatSection').classList.add('active');
+    
+    // Save to localStorage
+    localStorage.setItem('jwtToken', jwtToken);
+    localStorage.setItem('currentUser', currentUser);
+  }
+
+  function logout() {
+    // Clear tokens and user data
+    jwtToken = null;
+    currentUser = null;
+    
+    // Clear localStorage
+    localStorage.removeItem('jwtToken');
+    localStorage.removeItem('currentUser');
+    
+    // Close WebSocket
+    if (ws) {
+      ws.close();
+      ws = null;
     }
     
-    // console.log("Google ID Token:", googleIdToken); // For debugging, can be lengthy
+    // Reset UI
+    document.getElementById('authSection').style.display = 'block';
+    document.getElementById('userInfo').style.display = 'none';
+    document.getElementById('chatSection').classList.remove('active');
+    document.getElementById('chat').innerHTML = '';
+    document.getElementById('status').innerHTML = '';
+    
+    showStatus('Logged out successfully', 'info');
+  }
 
-    // Step 1: Get JWT token from backend using Google ID token
-    try {
-      setStatus("Attempting to log in with backend...");
-      const loginRes = await fetch(`${BACKEND_URL}/auth/google-login`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          // 'Origin': window.location.origin, // Origin header is usually managed by the browser for CORS
-          'Referrer-Policy': 'no-referrer-when-downgrade'
-        },
-        body: JSON.stringify({ token: googleIdToken }),
-      });
-
-      if (!loginRes.ok) {
-        const errorText = await loginRes.text();
-        setStatus(`Google login failed with backend. Status: ${loginRes.status}. Error: ${errorText}`);
-        alert(`Google login failed with backend. Status: ${loginRes.status}. Error: ${errorText}`);
-        return;
-      }
-
-      const loginData = await loginRes.json();
-      jwtToken = loginData.jwt_token;
-      setStatus("Backend login successful. JWT token received.");
-      console.log("JWT Token:", jwtToken);
-
-      // Step 2: Get Gmail access token for reading emails
-      setStatus("Requesting Gmail access token...");
-      googleAccessToken = await getGoogleAccessToken(); // This will trigger its own Google popup for scope approval
-      setStatus("Gmail access token received.");
-      console.log("Google Access Token for Gmail:", googleAccessToken ? googleAccessToken.substring(0,20)+'...' : 'Not received');
-
-
-      // Step 3: Fetch emails from backend
-      setStatus("Fetching emails from backend...");
-      const fetchRes = await fetch(`${BACKEND_URL}/gmail/fetch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          // 'Origin': window.location.origin, // Managed by browser
-          'Referrer-Policy': 'no-referrer-when-downgrade'
-          // If your backend expects JWT as Bearer token:
-          // 'Authorization': `Bearer ${jwtToken}`
-        },
-        body: JSON.stringify({
-          jwt_token: jwtToken, // Keep if backend expects in body
-          access_token: googleAccessToken,
-        }),
-      });
-
-      if (!fetchRes.ok) {
-        const fetchErrorText = await fetchRes.text();
-        setStatus(`Failed to fetch emails. Status: ${fetchRes.status}. Error: ${fetchErrorText}`);
-        alert(`Failed to fetch emails. Status: ${fetchRes.status}. Error: ${fetchErrorText}`);
-        return;
-      }
-      const fetchData = await fetchRes.json();
-      setStatus(`Fetched ${fetchData.count} emails.`);
-
-      // Step 4: Connect WebSocket chat now
-      connectWebSocket();
-
-    } catch (err) {
-        setStatus(`An error occurred during backend communication: ${err.message}`);
-        console.error("Error in handleCredentialResponse after getting Google token:", err);
-        alert(`An error occurred: ${err.message}. Check console.`);
+  function showStatus(message, type = 'info') {
+    const statusDiv = document.getElementById('status');
+    statusDiv.innerHTML = `<div class="status ${type}">${message}</div>`;
+    
+    // Auto-hide after 5 seconds for success/info messages
+    if (type === 'success' || type === 'info') {
+      setTimeout(() => {
+        statusDiv.innerHTML = '';
+      }, 5000);
     }
-  }
-
-  function setStatus(msg) {
-    document.getElementById('status').innerText = msg;
-    console.log(msg);
-  }
-
-  // Get Gmail Access Token with scope
-  function getGoogleAccessToken() {
-    setStatus("Initializing Google OAuth token client for Gmail scope...");
-    return new Promise((resolve, reject) => {
-      try {
-        const tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: GOOGLE_CLIENT_ID,
-          scope: 'https://www.googleapis.com/auth/gmail.readonly',
-          callback: (tokenResponse) => {
-            if (tokenResponse.error) {
-              console.error("Error from Gmail token request:", tokenResponse.error, tokenResponse.error_description);
-              setStatus(`Error getting Gmail access token: ${tokenResponse.error_description || tokenResponse.error}`);
-              reject(tokenResponse.error_description || tokenResponse.error);
-            } else {
-              console.log("Gmail access token response:", tokenResponse);
-              setStatus("Gmail access token successfully obtained.");
-              resolve(tokenResponse.access_token);
-            }
-          },
-          error_callback: (err) => { // Added error_callback for initTokenClient
-            console.error("Error initializing or using token client for Gmail:", err);
-            setStatus(`Error with Gmail token client: ${err.type || err.message}`);
-            reject(err.type || err.message);
-          }
-        });
-        tokenClient.requestAccessToken({prompt: 'consent'}); // Explicitly prompt for consent if needed for this scope
-      } catch(e) {
-        console.error("Exception in getGoogleAccessToken:", e);
-        setStatus(`Exception while getting Gmail access token: ${e.message}`);
-        reject(e.message);
-      }
-    });
   }
 
   // ========== WebSocket Chat ==========
   function connectWebSocket() {
     if (!jwtToken) {
-      alert("You need to sign in and authorize Gmail access first!");
-      setStatus("WebSocket connection aborted: JWT token missing.");
+      showStatus("Please login first", 'error');
       return;
     }
 
-    ws = new WebSocket(`ws://${BACKEND_URL.replace(/^http:\/\//i, '')}/ws/chat`); 
+    // Disable send button until connection is fully established
+    document.getElementById('sendBtn').disabled = true;
+
+    // Clear chatId - let backend generate it
+    currentChatId = null;
+
+    const wsUrl = `ws://${BACKEND_URL.replace(/^http:\/\//i, '')}/ws/chat`;
+    ws = new WebSocket(wsUrl);
+    
     ws.onopen = () => {
-      ws.send(JSON.stringify({ jwt_token: jwtToken }));
-      appendMessage("System", "Connected to chat.");
-      setStatus("Chat connected.");
+      console.log("[WebSocket] Connection opened, sending auth...");
+      // Send only JWT token - let backend generate chatId
+      ws.send(JSON.stringify({ 
+        jwt_token: jwtToken
+        // No chatId - backend will generate unique one
+      }));
+      // DON'T enable send button yet - wait for welcome message
     };
 
-    // UPDATED ws.onmessage HANDLER
     ws.onmessage = (event) => {
       console.log("[WebSocket] Raw event.data:", event.data);
       let botResponseText = ""; 
+      let receivedChatId = null;
+      let isWelcomeMessage = false;
+      
       try {
         const data = JSON.parse(event.data);
-        console.log("[WebSocket] Parsed data type:", typeof data);
-        console.log("[WebSocket] Parsed data content:", data);
-
+        
+        // Extract chatId from response
+        receivedChatId = data.chatId;
+        
+        // ALWAYS update currentChatId from server (backend generates unique IDs)
+        if (receivedChatId) {
+          if (!currentChatId) {
+            console.log(`[WebSocket] ✅ Received unique chat ID from server: ${receivedChatId}`);
+          } else if (receivedChatId !== currentChatId) {
+            console.log(`[WebSocket] 🔄 Chat ID updated: ${currentChatId} → ${receivedChatId}`);
+          }
+          currentChatId = receivedChatId;
+        }
+        
         if (data && data.error && data.reply && Array.isArray(data.reply) && data.reply.length > 0) {
-          // If there's an error flag and a message in reply, display that error
-          botResponseText = `Bot Error: ${data.reply[0]}`;
+          botResponseText = `Error: ${data.reply[0]}`;
         } else if (data && data.reply && Array.isArray(data.reply) && data.reply.length > 0) {
-          // This is the expected successful response format: {"reply": ["AI response string"]}
-          botResponseText = data.reply[0]; // Directly take the first string from the reply array
+          botResponseText = data.reply[0];
+          
+          // Check if this is the welcome message
+          if (botResponseText.includes("Connected to chat")) {
+            isWelcomeMessage = true;
+            console.log(`[WebSocket] ✅ Welcome message received with chat ID: ${currentChatId}`);
+            console.log("[WebSocket] 🔓 Enabling send button - chat ready!");
+            document.getElementById('sendBtn').disabled = false;
+          }
         } else {
-          botResponseText = "Received an unrecognized data structure from server.";
+          botResponseText = "Received an unrecognized response from server.";
           console.warn("[WebSocket] Unrecognized data structure:", data);
         }
       } catch (e) {
         botResponseText = "Error parsing message from server.";
         console.error("[WebSocket] Error parsing message:", e, "Raw data:", event.data);
       }
-      console.log("[WebSocket] Final botResponseText before appendMessage:", botResponseText);
-      appendMessage("Bot", botResponseText, true);
+      
+      // Only append message if it's for the current chat
+      if (!receivedChatId || receivedChatId === currentChatId) {
+        appendMessage(isWelcomeMessage ? "System" : "AI Assistant", botResponseText, isWelcomeMessage ? 'system' : 'bot');
+      }
     };
 
     ws.onerror = (event) => {
-        console.error("WebSocket error:", event);
-        appendMessage("System", "WebSocket error. Check console.");
-        setStatus("WebSocket error.");
+      console.error("WebSocket error:", event);
+      appendMessage("System", "Connection error. Please try refreshing the page.", 'system');
+      document.getElementById('sendBtn').disabled = true;
     };
+    
     ws.onclose = () => {
-        appendMessage("System", "Disconnected from chat.");
-        setStatus("Chat disconnected.");
+      appendMessage("System", "Disconnected from chat.", 'system');
+      document.getElementById('sendBtn').disabled = true;
     };
   }
 
   function sendMessage() {
+    console.log(`[WebSocket] Attempting to send message. Connection state: ${ws ? ws.readyState : 'null'}`);
+    
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      alert("WebSocket is not connected. Please sign in, authorize Gmail, and wait for connection.");
-      setStatus("Cannot send message: WebSocket not open.");
+      console.log("[WebSocket] Connection not ready");
+      showStatus("Not connected to chat. Please wait or refresh the page.", 'error');
       return;
     }
+    
+    if (!currentChatId) {
+      console.log("[WebSocket] No chat ID available yet");
+      showStatus("Chat not ready. Please wait for connection to complete.", 'error');
+      return;
+    }
+    
     const input = document.getElementById("msg");
     const message = input.value.trim();
     if (!message) return;
 
-    ws.send(JSON.stringify({ message }));
-    appendMessage("You", message, false);
+    console.log(`[WebSocket] 📤 Sending message: "${message}" with server-generated chatId: ${currentChatId}`);
+    
+    // Send message with server-generated chatId
+    ws.send(JSON.stringify({ 
+      message: message,
+      chatId: currentChatId  // Always use server-generated ID
+    }));
+    
+    appendMessage("You", message, 'user');
     input.value = "";
   }
 
-  function appendMessage(sender, text, isBot = false) {
+  function appendMessage(sender, text, type = 'bot') {
     const chat = document.getElementById("chat");
-    const p = document.createElement("p");
-
-    if (isBot) {
-      p.classList.add("bot-message-style");
+    const messageDiv = document.createElement("div");
+    messageDiv.classList.add("message");
+    
+    if (type === 'user') {
+      messageDiv.classList.add("user-message");
+      messageDiv.textContent = text;
+    } else if (type === 'bot') {
+      messageDiv.classList.add("bot-message");
       // Use marked.parse() to convert markdown to HTML
-      // Ensure to handle potential null or undefined text to avoid errors with marked
-      const htmlContent = text ? marked.parse(text) : ''; 
-      p.innerHTML = `${sender}: ${htmlContent}`; // Set innerHTML for rendered markdown
-    } else {
-      p.textContent = `${sender}: ${text}`; // For user and system messages
+      const htmlContent = text ? marked.parse(text) : '';
+      messageDiv.innerHTML = htmlContent;
+    } else if (type === 'system') {
+      messageDiv.classList.add("system-message");
+      messageDiv.textContent = text;
     }
     
-    chat.appendChild(p);
+    chat.appendChild(messageDiv);
     chat.scrollTop = chat.scrollHeight;
   }
 </script>
