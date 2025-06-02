@@ -20,7 +20,7 @@ async def fetch_emails(service, user_id='me', max_results=100):
     # query_string = 'newer_than:15d'
 
     # Using newer_than:15d for simplicity with Gmail API
-    query_filter = 'newer_than:30d'
+    query_filter = 'newer_than:1d'
     
     results = service.users().messages().list(
         userId=user_id, 
