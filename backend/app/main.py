@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from app.auth import verify_google_token, create_jwt_token, decode_jwt_token
@@ -18,6 +19,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Define the security scheme
+security = HTTPBearer()
 
 # Allow CORS from frontend origin (adjust as needed)
 app.add_middleware(
@@ -57,7 +61,9 @@ async def google_login(payload: GoogleToken):
             logger.info("User not found, creating new user with Google info...")
             # Use the info directly from Google for the first insert
             # MongoDB will add an _id field automatically
-            insert_result = await users_collection.insert_one(raw_user_info_from_google.copy()) # Use a copy
+            user_to_insert = raw_user_info_from_google.copy() # Use a copy
+            user_to_insert['initial_gmailData_sync'] = False # Initialize initial_gmailData_sync
+            insert_result = await users_collection.insert_one(user_to_insert)
             logger.info(f"New user created. Inserted ID: {insert_result.inserted_id}")
             # Fetch the newly created user to get all fields including the auto-generated _id
             final_user_info_to_return = await users_collection.find_one({"_id": insert_result.inserted_id})
@@ -121,16 +127,21 @@ async def gmail_fetch(payload: GmailFetchPayload):
                 email_item['user_id'] = user_id
             await emails_collection.insert_many(emails)
             logger.info("Emails stored in MongoDB.")
-        else:
-            logger.info("No emails to store.")
 
-        # Upload to Mem0 memory
-        if emails:
+            # Upload to Mem0 memory
             logger.info("Uploading emails to Mem0...")
             await upload_emails_to_mem0(user_id, emails)
             logger.info("Emails uploaded to Mem0.")
+
+            # Update initial_gmailData_sync for the user
+            logger.info(f"Updating initial_gmailData_sync to true for user_id: {user_id}")
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"initial_gmailData_sync": True}}
+            )
+            logger.info(f"initial_gmailData_sync updated for user_id: {user_id}")
         else:
-            logger.info("No emails to upload to Mem0.")
+            logger.info("No emails to store.")
 
         return {"message": "Emails fetched and processed successfully", "count": len(emails)}
     except HTTPException as e:
@@ -199,7 +210,8 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             user_data.update({
                 "access_token": credentials.token,
                 "refresh_token": credentials.refresh_token,
-                "token_expiry": credentials.expiry.isoformat() if credentials.expiry else None
+                "token_expiry": credentials.expiry.isoformat() if credentials.expiry else None,
+                "initial_gmailData_sync": False  # Initialize initial_gmailData_sync
             })
             insert_result = await users_collection.insert_one(user_data)
             final_user_info = await users_collection.find_one({"_id": insert_result.inserted_id})
@@ -280,6 +292,14 @@ async def fetch_user_emails(authorization: str = Header(None)):
             logger.info("Uploading emails to Mem0...")
             await upload_emails_to_mem0(user_id, emails)
             logger.info("Emails uploaded to Mem0")
+
+            # Update initial_gmailData_sync for the user
+            logger.info(f"Updating initial_gmailData_sync to true for user_id: {user_id}")
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"initial_gmailData_sync": True}}
+            )
+            logger.info(f"initial_gmailData_sync updated for user_id: {user_id}")
         
         return {
             "success": True,
@@ -347,6 +367,14 @@ async def fetch_user_emails_with_token(payload: EmailFetchRequest):
             logger.info("Uploading emails to Mem0...")
             await upload_emails_to_mem0(user_id, emails)
             logger.info("Emails uploaded to Mem0")
+
+            # Update initial_gmailData_sync for the user
+            logger.info(f"Updating initial_gmailData_sync to true for user_id: {user_id}")
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"initial_gmailData_sync": True}}
+            )
+            logger.info(f"initial_gmailData_sync updated for user_id: {user_id}")
         
         return {
             "success": True,
@@ -363,6 +391,64 @@ async def fetch_user_emails_with_token(payload: EmailFetchRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch emails: {str(e)}"
+        )
+
+@app.get("/me")
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Fetch details for the currently authenticated user.
+    Uses HTTPBearer token for authentication.
+    """
+    logger.info("Received request for /me")
+    try:
+        token = credentials.credentials
+        logger.info("Decoding JWT token for /me...")
+        user_payload = decode_jwt_token(token)
+        user_id = user_payload.get("user_id")
+        
+        if not user_id:
+            logger.error("User ID not found in JWT payload for /me")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="User ID not found in token"
+            )
+        
+        logger.info(f"Fetching user data for user_id: {user_id}")
+        user_in_db = await users_collection.find_one({"user_id": user_id})
+        
+        if not user_in_db:
+            logger.warning(f"User not found in database with user_id: {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Check email data status and update if necessary
+        has_email_data = await emails_collection.count_documents({"user_id": user_id}) > 0
+        current_status_in_db = user_in_db.get("initial_gmailData_sync")
+
+        if current_status_in_db is None or current_status_in_db != has_email_data:
+            logger.info(f"Updating initial_gmailData_sync for user {user_id} from {current_status_in_db} to {has_email_data}")
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"initial_gmailData_sync": has_email_data}}
+            )
+            user_in_db["initial_gmailData_sync"] = has_email_data # Reflect change in current dict
+        
+        # Convert ObjectId to string before returning
+        serializable_user_info = convert_objectid_to_str(user_in_db)
+        logger.info(f"Successfully fetched user data for /me: {serializable_user_info.get('email')}")
+        return serializable_user_info
+        
+    except HTTPException as e:
+        # Log specific HTTP exceptions and re-raise
+        logger.error(f"HTTPException in /me endpoint: {e.detail}", exc_info=e.status_code not in [401, 404]) # Don't need full stack for 401/404
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in /me endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {str(e)}"
         )
 
 def convert_objectid_to_str(data):
